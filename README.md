@@ -12,8 +12,17 @@ hundred an editor platform needs.
 
 - **Tabs for up to 10 files** — open several `.md` files and switch between them;
   each tab keeps its own text and unsaved-changes dot (`Ctrl+Tab`, `Ctrl+W`).
+- **Restores your last session** — the tabs you had open come back on the next
+  launch, with the same one active. Untitled buffers are not restored.
+- **Find and replace** — `Ctrl+F` searches the source and the rendered preview
+  together, highlights every hit, and steps through them with `F3` / `Shift+F3`
+  and an `n of m` counter; `Ctrl+H` adds replace and replace-all, with case and
+  whole-word toggles.
+- **Editing tools** — undo/redo, cut/copy/paste, go to line (`Ctrl+G`), word-wrap
+  toggle and an *Open recent* menu.
 - **New file, open file, open folder** — `Ctrl+N`, `Ctrl+O` (multi-select), and
-  `Ctrl+Shift+O` to pick from a folder of Markdown files.
+  `Ctrl+Shift+O` to load every Markdown file in a folder at once, sorted by
+  name, with no file-list dialog in between.
 - **Start screen** — launched with no arguments, the window offers New / Open /
   Open folder plus your recent files instead of an empty editor.
 - **One view switch** with three positions: book (rendered), split, code (source).
@@ -85,14 +94,27 @@ Rebuild it after changing the source; `build/`, `dist/` and the generated
 | Save as | `Ctrl+Shift+S` |
 | Close tab | `Ctrl+W` |
 | Next tab | `Ctrl+Tab` |
+| Find in source and preview | `Ctrl+F` |
+| Find and replace | `Ctrl+H` |
+| Next / previous match | `F3` / `Shift+F3` |
+| Go to line | `Ctrl+G` |
 | Scroll the rendered view | `↑` `↓` `PgUp` `PgDn` `Home` `End` |
 | Zoom in / out | `Ctrl+=` / `Ctrl+-` |
 | Reset zoom | `Ctrl+0` |
 | Cycle book / split / code | `Ctrl+E` |
 | Switch theme | `Ctrl+T` |
 
-The View menu holds auto save, the two font pickers, text direction and the
-visual RTL preview toggle.
+The View menu holds auto save, word wrap, the two font pickers, text direction
+and the visual RTL preview toggle.
+
+### Find and replace
+
+The find bar searches **both** panes, so the counter and `F3` cover source hits
+and rendered hits together, and every match is highlighted in the pane it lives
+in. Replacement always edits the **source** — that is the file. If the current
+match happens to be a rendered one, *Replace* says so; *Replace all* rewrites
+every source occurrence and the preview follows. Replacing is refused in Read
+mode, where the source is not editable.
 
 ## Right-to-left text (Persian, Arabic, Hebrew)
 
@@ -139,6 +161,7 @@ markvist/
 ├── tests/               unittest suite (no display required)
 ├── pyproject.toml
 ├── build_exe.bat        PyInstaller one-file build
+├── exe_entry.py         entry script used by the build
 ├── markvist.bat         Windows launcher (needs Python)
 └── README.md
 ```
@@ -154,7 +177,8 @@ headless. CI runs them on Ubuntu and Windows for Python 3.10 and 3.13.
 
 ## Known limitations
 
-- At most 10 files open at once; opening another asks you to close a tab first.
+- At most 10 files open at once. Opening a folder with more Markdown files
+  loads the first 10 and says so in the status bar; no dialog interrupts you.
 - "Open folder" lists the `.md` files directly inside the chosen folder, not
   subfolders.
 - No drag and drop (Tk needs a third-party package for it).
@@ -165,6 +189,8 @@ headless. CI runs them on Ubuntu and Windows for Python 3.10 and 3.13.
 - Tables use their natural width and scroll with the text; a table wider than
   the preview pane is clipped rather than squeezed into columns.
 - No file-watching: if another program edits the file, reopen it.
+- The find bar has no regular-expression mode; it matches plain text with
+  optional case and whole-word sensitivity.
 
 ## License
 

@@ -7,7 +7,7 @@ import sys
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, font as tkfont, messagebox
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog
 
 from .document import Document
 from .markdown import detect_rtl, parse_markdown
@@ -65,7 +65,13 @@ class Markvist:
         self._render_job = None
         self._preview_width = 0
         self._autosave_job = None
+        self._flash_job = None
+        self._flash_active = False
         self._loading = False
+        self.wrap = True
+        self.restore_session = True
+        self.session_paths: list[str] = []
+        self.session_active = 0
 
         self._load_prefs()
 
@@ -90,7 +96,7 @@ class Markvist:
 
         if path:
             self._open_paths([path])
-        else:
+        elif not self._restore_session():
             self._show_welcome()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -120,8 +126,42 @@ class Markvist:
             self._geometry = data["geometry"]
         if isinstance(data.get("recent"), list):
             self.recent = [r for r in data["recent"] if isinstance(r, str)][:8]
+        self.wrap = bool(data.get("wrap", True))
+        self.restore_session = bool(data.get("restore_session", True))
+        if isinstance(data.get("session_paths"), list):
+            self.session_paths = [p for p in data["session_paths"] if isinstance(p, str)][:MAX_TABS]
+        try:
+            self.session_active = max(0, int(data.get("session_active", 0)))
+        except (TypeError, ValueError):
+            self.session_active = 0
+
+    def _session_state(self) -> tuple[list[str], int]:
+        paths: list[str] = []
+        active = 0
+        for i, doc in enumerate(self.docs):
+            if doc.path is None:
+                continue
+            if i == self.active:
+                active = len(paths)
+            paths.append(str(doc.path))
+        return paths[:MAX_TABS], active
+
+    def _restore_session(self) -> bool:
+        """Reopen the tabs from the previous run, if there were any."""
+        if not self.restore_session or not self.session_paths:
+            return False
+        paths = [p for p in self.session_paths if Path(p).is_file()][:MAX_TABS]
+        if not paths:
+            return False
+        self._open_paths(paths, quiet=True)
+        if not self.docs:
+            return False
+        self._activate(min(self.session_active, len(self.docs) - 1))
+        self._flash("Restored %d tab%s" % (len(self.docs), "" if len(self.docs) == 1 else "s"))
+        return True
 
     def save_prefs(self) -> None:
+        session_paths, session_active = self._session_state()
         data = {
             "theme": self.theme,
             "mode": self.mode,
@@ -132,6 +172,10 @@ class Markvist:
             "read_font": self.doc_family,
             "editor_font": self.mono_family,
             "recent": self.recent,
+            "wrap": self.wrap,
+            "restore_session": self.restore_session,
+            "session_paths": session_paths,
+            "session_active": session_active,
         }
         try:
             data["geometry"] = self.root.geometry()
@@ -211,7 +255,7 @@ class Markvist:
 
         self.editor = tk.Text(
             self.editor_frame,
-            wrap="word",
+            wrap="word" if self.wrap else "none",
             undo=True,
             bd=0,
             highlightthickness=0,
@@ -262,6 +306,52 @@ class Markvist:
         self.editor.bind("<<Modified>>", self._on_modified)
         self.editor.bind("<Tab>", self._on_tab)
 
+        # find / replace bar ----------------------------------------------- #
+        self.find_bar = tk.Frame(self.content)
+        self.find_row = tk.Frame(self.find_bar)
+        self.find_row.pack(side="top", fill="x")
+
+        self.find_entry = tk.Entry(self.find_row, bd=0, relief="flat", highlightthickness=1)
+        self.find_entry.pack(side="left", fill="x", expand=True, padx=(10, 6), pady=(7, 3))
+        self.find_entry.bind("<KeyRelease>", lambda _e: self.find_run())
+        self.find_entry.bind("<Return>", lambda _e: self._then_break(self.find_next))
+        self.find_entry.bind("<Shift-Return>", lambda _e: self._then_break(lambda: self.find_next(-1)))
+        self.find_entry.bind("<Escape>", lambda _e: self._then_break(self.hide_find))
+
+        self.find_count = tk.Label(self.find_row, text="", width=11, anchor="e")
+        self.find_count.pack(side="left", padx=(0, 6))
+
+        self.case_btn = self._button(self.find_row, "Aa", self.toggle_case, width=3)
+        self.whole_btn = self._button(self.find_row, "W", self.toggle_whole, width=3)
+        self.prev_btn = self._button(self.find_row, "↑", lambda: self.find_next(-1), width=2)
+        self.next_btn = self._button(self.find_row, "↓", lambda: self.find_next(1), width=2)
+        self.replace_toggle_btn = self._button(self.find_row, "⇄", self.toggle_replace, width=3)
+        self.find_close_btn = self._button(self.find_row, "×", self.hide_find, width=2)
+        self.find_buttons = [self.case_btn, self.whole_btn, self.prev_btn, self.next_btn,
+                             self.replace_toggle_btn, self.find_close_btn]
+        for widget in self.find_buttons:
+            widget.pack(side="left", padx=(0, 4), pady=(7, 3))
+        self.find_close_btn.pack(side="left", padx=(0, 10), pady=(7, 3))
+
+        self.find_replace_row = tk.Frame(self.find_bar)
+        self.replace_entry = tk.Entry(self.find_replace_row, bd=0, relief="flat", highlightthickness=1)
+        self.replace_entry.pack(side="left", fill="x", expand=True, padx=(10, 6), pady=(3, 8))
+        self.replace_entry.bind("<Return>", lambda _e: self._then_break(self.replace_current))
+        self.replace_entry.bind("<Escape>", lambda _e: self._then_break(self.hide_find))
+        self.replace_one_btn = self._button(self.find_replace_row, "Replace", self.replace_current)
+        self.replace_all_btn = self._button(self.find_replace_row, "Replace all", self.replace_all)
+        self.replace_one_btn.pack(side="left", padx=(0, 6), pady=(3, 8))
+        self.replace_all_btn.pack(side="left", padx=(0, 10), pady=(3, 8))
+        self.find_buttons += [self.replace_one_btn, self.replace_all_btn]
+
+        self.find_visible = False
+        self.replace_mode = False
+        self.find_case = False
+        self.find_whole = False
+        self._find_matches: list = []
+        self._find_index = -1
+        self._scan_count = tk.IntVar(master=self.root)
+
         # start screen ---------------------------------------------------- #
         self.welcome = tk.Frame(self.content)
         self.welcome_inner = tk.Frame(self.welcome)
@@ -293,7 +383,7 @@ class Markvist:
         self.dir_label.pack(side="left")
         self.hint_label = tk.Label(
             self.status,
-            text="Ctrl+N new · Ctrl+O open · Ctrl+S save · Ctrl+=/− zoom · Ctrl+E mode · Ctrl+W close",
+            text="Ctrl+N new · Ctrl+O open · Ctrl+F find · Ctrl+S save · Ctrl+E mode · Ctrl+W close",
             anchor="e",
         )
         self.hint_label.pack(side="right", padx=(10, 14))
@@ -326,6 +416,8 @@ class Markvist:
         file_menu.add_command(label="Open…", accelerator="Ctrl+O", command=self.open_file)
         file_menu.add_command(label="Open folder…", accelerator="Ctrl+Shift+O",
                               command=self.open_folder)
+        self.recent_menu = tk.Menu(file_menu, tearoff=0, postcommand=self._fill_recent_menu)
+        file_menu.add_cascade(label="Open recent", menu=self.recent_menu)
         file_menu.add_separator()
         file_menu.add_command(label="Save", accelerator="Ctrl+S", command=self.save_file)
         file_menu.add_command(label="Save as…", accelerator="Ctrl+Shift+S",
@@ -334,6 +426,32 @@ class Markvist:
         file_menu.add_command(label="Close tab", accelerator="Ctrl+W", command=self.close_tab)
         file_menu.add_command(label="Exit", command=self.on_close)
         menubar.add_cascade(label="File", menu=file_menu)
+
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        edit_menu.add_command(label="Undo", accelerator="Ctrl+Z",
+                              command=lambda: self._edit("<<Undo>>"))
+        edit_menu.add_command(label="Redo", accelerator="Ctrl+Y",
+                              command=lambda: self._edit("<<Redo>>"))
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Cut", accelerator="Ctrl+X",
+                              command=lambda: self._edit("<<Cut>>"))
+        edit_menu.add_command(label="Copy", accelerator="Ctrl+C",
+                              command=lambda: self._edit("<<Copy>>"))
+        edit_menu.add_command(label="Paste", accelerator="Ctrl+V",
+                              command=lambda: self._edit("<<Paste>>"))
+        edit_menu.add_command(label="Select all", accelerator="Ctrl+A",
+                              command=lambda: self._edit("<<SelectAll>>"))
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Find…", accelerator="Ctrl+F", command=self.show_find)
+        edit_menu.add_command(label="Find and replace…", accelerator="Ctrl+H",
+                              command=lambda: self.show_find(replace=True))
+        edit_menu.add_command(label="Find next", accelerator="F3",
+                              command=lambda: self.find_next(1))
+        edit_menu.add_command(label="Find previous", accelerator="Shift+F3",
+                              command=lambda: self.find_next(-1))
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Go to line…", accelerator="Ctrl+G", command=self.goto_line)
+        menubar.add_cascade(label="Edit", menu=edit_menu)
 
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(label="Read only", accelerator="Ctrl+E",
@@ -352,6 +470,9 @@ class Markvist:
         self.autosave_var = tk.BooleanVar(value=self.autosave)
         view_menu.add_checkbutton(label="Auto save", variable=self.autosave_var,
                                   command=self.set_autosave)
+        self.wrap_var = tk.BooleanVar(value=self.wrap)
+        view_menu.add_checkbutton(label="Word wrap", variable=self.wrap_var,
+                                  command=self.set_wrap)
 
         font_menu = tk.Menu(view_menu, tearoff=0)
         self.read_font_var = tk.StringVar(value=self.doc_family)
@@ -405,6 +526,13 @@ class Markvist:
         root.bind_all("<Control-W>", lambda _e: self._then_break(self.close_tab))
         root.bind_all("<Control-e>", lambda _e: self._then_break(self.cycle_mode))
         root.bind_all("<Control-t>", lambda _e: self._then_break(self.toggle_theme))
+        root.bind_all("<Control-f>", lambda _e: self._then_break(self.show_find))
+        root.bind_all("<Control-F>", lambda _e: self._then_break(self.show_find))
+        root.bind_all("<Control-h>", lambda _e: self._then_break(lambda: self.show_find(replace=True)))
+        root.bind_all("<F3>", lambda _e: self._then_break(lambda: self.find_next(1)))
+        root.bind_all("<Shift-F3>", lambda _e: self._then_break(lambda: self.find_next(-1)))
+        root.bind_all("<Control-g>", lambda _e: self._then_break(self.goto_line))
+        root.bind_all("<Escape>", lambda _e: self._then_break(self.hide_find))
         root.bind_all("<Control-Tab>", lambda _e: self._then_break(self.next_tab))
         root.bind_all("<Control-Shift-Tab>", lambda _e: self._then_break(self.previous_tab))
         for seq in ("<Control-equal>", "<Control-plus>", "<Control-KP_Add>"):
@@ -460,6 +588,7 @@ class Markvist:
         buttons = [
             self.open_btn, self.new_btn, self.save_btn, self.theme_btn,
             self.zoom_in_btn, self.zoom_out_btn, *self.welcome_buttons,
+            *self.find_buttons,
         ]
         for btn in buttons:
             btn.configure(
@@ -495,6 +624,18 @@ class Markvist:
             selectbackground=p["accent_soft"],
             selectforeground=p["fg"],
         )
+        self.find_bar.configure(bg=p["bg_soft"])
+        self.find_row.configure(bg=p["bg_soft"])
+        self.find_replace_row.configure(bg=p["bg_soft"])
+        self.find_count.configure(bg=p["bg_soft"], fg=p["muted"],
+                                  font=(self.app_family, -int(11 * self.ui_scale)))
+        for entry in (self.find_entry, self.replace_entry):
+            entry.configure(
+                bg=p["bg"], fg=p["fg"], insertbackground=p["accent"],
+                highlightbackground=p["border"], highlightcolor=p["accent"],
+                font=(self.app_family, -int(12 * self.ui_scale)),
+            )
+        self._paint_find_buttons()
         self.theme_btn.configure(text="☾" if self.theme == "light" else "☀")
         self.view_switch.set_palette(p)
         self.view_switch.sync(self.mode)
@@ -654,10 +795,18 @@ class Markvist:
             self.paned.pack(side="top", fill="both", expand=True)
         if not self.tabbar.winfo_ismapped():
             self.tabbar.pack(side="top", fill="x", before=self.paned)
+        if self.find_visible and not self.find_bar.winfo_manager():
+            self.find_bar.pack(side="top", fill="x", before=self.paned)
 
     def _show_welcome(self) -> None:
         self.paned.pack_forget()
         self.tabbar.pack_forget()
+        self.find_bar.pack_forget()
+        self.find_visible = False
+        self.replace_mode = False
+        self._find_clear()
+        self._find_matches = []
+        self._find_index = -1
         if not self.welcome.winfo_ismapped():
             self.welcome.pack(side="top", fill="both", expand=True)
         self._build_recent()
@@ -744,11 +893,7 @@ class Markvist:
         self._flash("New file")
 
     def _warn_limit(self) -> None:
-        messagebox.showwarning(
-            "Tab limit",
-            "markvist keeps at most %d files open. Close a tab first." % MAX_TABS,
-            parent=self.root,
-        )
+        self._flash("At most %d files can be open. Close a tab first." % MAX_TABS)
 
     def open_file(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -774,75 +919,13 @@ class Markvist:
             return
 
         if not files:
-            messagebox.showinfo(
-                "No Markdown files",
-                "There are no .md files directly inside %s." % root.name,
-                parent=self.root,
-            )
+            self._flash("No Markdown files in %s" % root.name)
             return
-        self._folder_picker(root, files)
+        self._open_paths(files)
 
-    def _folder_picker(self, folder: Path, files: list[Path]) -> None:
-        p = self.palette
-        win = tk.Toplevel(self.root)
-        win.title("Open from %s" % folder.name)
-        win.transient(self.root)
-        win.configure(bg=p["bg"])
-        win.geometry("520x440")
-        win.minsize(360, 300)
-
-        head = tk.Label(
-            win, text="%d Markdown file%s in %s" % (len(files), "" if len(files) == 1 else "s",
-                                                    folder.name),
-            bg=p["bg"], fg=p["muted"], anchor="w",
-            font=(self.app_family, -int(12 * self.ui_scale)),
-        )
-        head.pack(fill="x", padx=14, pady=(12, 6))
-
-        body = tk.Frame(win, bg=p["bg"])
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-
-        listbox = tk.Listbox(
-            body, selectmode="extended", activestyle="none", bd=0, highlightthickness=0,
-            bg=p["bg_soft"], fg=p["fg"], selectbackground=p["accent_soft"], selectforeground=p["fg"],
-            font=(self.app_family, -int(12 * self.ui_scale)),
-        )
-        scroll = tk.Scrollbar(body, command=listbox.yview, width=11, bd=0, relief="flat",
-                              highlightthickness=0, bg=p["bg_inset"], troughcolor=p["bg_soft"])
-        listbox.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        listbox.pack(side="left", fill="both", expand=True)
-
-        for path in files:
-            listbox.insert("end", path.name)
-
-        def open_selected(_event=None):
-            chosen = [files[i] for i in listbox.curselection()]
-            if not chosen:
-                return
-            win.destroy()
-            self._open_paths(chosen)
-
-        footer = tk.Frame(win, bg=p["bg"])
-        footer.pack(fill="x", padx=12, pady=(0, 12))
-        open_btn = tk.Button(footer, text="Open", command=open_selected, bd=0, padx=14, pady=4,
-                             bg=p["accent"], fg=p["bg"], cursor="hand2", takefocus=0,
-                             font=(self.app_family, -int(12 * self.ui_scale), "bold"))
-        open_btn.pack(side="right")
-        cancel = tk.Button(footer, text="Cancel", command=win.destroy, bd=0, padx=14, pady=4,
-                           bg=p["bg_soft"], fg=p["fg"], cursor="hand2", takefocus=0,
-                           font=(self.app_family, -int(12 * self.ui_scale)))
-        cancel.pack(side="right", padx=(0, 6))
-
-        listbox.bind("<Double-Button-1>", open_selected)
-        listbox.bind("<Return>", open_selected)
-        win.bind("<Escape>", lambda _e: win.destroy())
-        win.grab_set()
-        listbox.focus_set()
-
-    def _open_paths(self, paths) -> None:
-        limit_warned = False
+    def _open_paths(self, paths, quiet: bool = False) -> None:
         opened = 0
+        skipped = 0
         last_index = self.active
 
         for raw in paths:
@@ -860,10 +943,8 @@ class Markvist:
                 continue
 
             if len(self.docs) >= MAX_TABS:
-                if not limit_warned:
-                    self._warn_limit()
-                    limit_warned = True
-                break
+                skipped += 1
+                continue
 
             try:
                 text = p.read_text(encoding="utf-8-sig")
@@ -886,7 +967,11 @@ class Markvist:
             self._activate(last_index)
         else:
             self._show_welcome()
-        if opened:
+        if quiet:
+            return
+        if opened and skipped:
+            self._flash("Opened %d of %d files · limit is %d" % (opened, opened + skipped, MAX_TABS))
+        elif opened:
             self._flash("Opened %d file%s" % (opened, "" if opened == 1 else "s"))
 
     def load_path(self, path: str) -> None:
@@ -970,6 +1055,8 @@ class Markvist:
             return
         self.editor.edit_modified(False)
         self._mark_dirty()
+        if self.find_visible:
+            self.find_run(reset=False)
 
     def _on_tab(self, _event=None) -> str:
         self.editor.insert("insert", "    ")
@@ -1011,6 +1098,8 @@ class Markvist:
         self._render_job = self.root.after(180, self._render_soon)
 
     def update_stats(self) -> None:
+        if self._flash_active:
+            return
         text = self.editor.get("1.0", "end-1c") if self.docs else ""
         words = len(re.findall(r"\S+", text)) if text else 0
         minutes = max(1, round(words / 220))
@@ -1035,6 +1124,8 @@ class Markvist:
         ).render(parse_markdown(text))
         self._apply_editor_direction()
         self._update_direction_badge()
+        if self.find_visible and self.find_entry.get():
+            self.find_run(reset=False)
 
     def _update_direction_badge(self) -> None:
         if not self.rtl:
@@ -1117,7 +1208,7 @@ class Markvist:
                     if not self.save_file():
                         return
 
-        for job in (self._render_job, self._autosave_job):
+        for job in (self._render_job, self._autosave_job, self._flash_job):
             if job is not None:
                 try:
                     self.root.after_cancel(job)
@@ -1128,11 +1219,291 @@ class Markvist:
 
     # -- misc -------------------------------------------------------------- #
 
+    # -- find and replace -------------------------------------------------- #
+
+    def show_find(self, replace: bool = False) -> None:
+        if not self.docs:
+            self._flash("Open a document first")
+            return
+        self._show_workspace()
+        self.find_visible = True
+        if not self.find_bar.winfo_manager():
+            self.find_bar.pack(side="top", fill="x", before=self.paned)
+        if replace:
+            self.replace_mode = True
+        if self.replace_mode and not self.find_replace_row.winfo_manager():
+            self.find_replace_row.pack(side="top", fill="x")
+        selection = self._selected_text()
+        if selection and "\n" not in selection and len(selection) <= 200:
+            self.find_entry.delete(0, "end")
+            self.find_entry.insert(0, selection)
+        target = self.replace_entry if replace else self.find_entry
+        target.focus_set()
+        target.selection_range(0, "end")
+        self.find_run()
+
+    def hide_find(self) -> None:
+        if not self.find_visible:
+            return
+        self.find_visible = False
+        self.replace_mode = False
+        self.find_bar.pack_forget()
+        self._find_clear()
+        self._find_matches = []
+        self._find_index = -1
+        self.find_count.configure(text="")
+        self._paint_find_buttons()
+        if self.docs:
+            if self.mode == "read":
+                self.preview.focus_set()
+            else:
+                self.editor.focus_set()
+
+    def _selected_text(self) -> str:
+        for widget in (self.editor, self.preview):
+            try:
+                return widget.get("sel.first", "sel.last")
+            except tk.TclError:
+                continue
+        return ""
+
+    def toggle_case(self) -> None:
+        self.find_case = not self.find_case
+        self._paint_find_buttons()
+        if self.find_visible:
+            self.find_run()
+
+    def toggle_whole(self) -> None:
+        self.find_whole = not self.find_whole
+        self._paint_find_buttons()
+        if self.find_visible:
+            self.find_run()
+
+    def _paint_find_buttons(self) -> None:
+        p = self.palette
+        self.case_btn.configure(fg=p["accent"] if self.find_case else p["muted"])
+        self.whole_btn.configure(fg=p["accent"] if self.find_whole else p["muted"])
+        self.replace_toggle_btn.configure(
+            fg=p["accent"] if self.replace_mode else p["muted"]
+        )
+
+    def find_run(self, reset: bool = True) -> None:
+        if not self.find_visible:
+            return
+        matches = self._find_collect(self.find_entry.get())
+        self._find_matches = matches
+        if not matches:
+            self._find_index = -1
+        elif reset or self._find_index < 0:
+            self._find_index = 0
+        else:
+            self._find_index = min(self._find_index, len(matches) - 1)
+        self._find_paint()
+        if self._find_index >= 0:
+            self._find_reveal()
+
+    def find_next(self, delta: int = 1) -> None:
+        if not self.find_visible:
+            self.show_find()
+            return
+        if not self._find_matches:
+            self.find_run()
+        if not self._find_matches:
+            return
+        self.find_step(delta)
+
+    def find_step(self, delta: int) -> None:
+        if not self._find_matches:
+            return
+        self._find_index = (self._find_index + delta) % len(self._find_matches)
+        self._find_paint()
+        self._find_reveal()
+
+    def _find_collect(self, query: str) -> list:
+        if not query:
+            return []
+        found = self._scan(self.editor, query)
+        found.extend(self._scan(self.preview, query))
+        return found
+
+    def _scan(self, widget: tk.Text, query: str) -> list:
+        matches = []
+        length = self._scan_count
+        index = "1.0"
+        while True:
+            hit = widget.search(query, index, stopindex="end",
+                                nocase=not self.find_case, count=length)
+            if not hit:
+                break
+            size = length.get()
+            if size <= 0:
+                break
+            end = "%s+%dc" % (hit, size)
+            if not self.find_whole or self._word_bounded(widget, hit, end):
+                matches.append((widget, hit, end))
+            index = end
+        return matches
+
+    @staticmethod
+    def _word_bounded(widget: tk.Text, start: str, end: str) -> bool:
+        before = widget.get("%s-1c" % start, start)
+        after = widget.get(end, "%s+1c" % end)
+        return all(not (ch.isalnum() or ch == "_") for ch in (before, after))
+
+    def _find_clear(self) -> None:
+        for widget in (self.editor, self.preview):
+            widget.tag_remove("find_all", "1.0", "end")
+            widget.tag_remove("find_cur", "1.0", "end")
+
+    def _find_paint(self) -> None:
+        p = self.palette
+        self._find_clear()
+        for widget in (self.editor, self.preview):
+            widget.tag_configure("find_all", background=p["accent_soft"], foreground=p["fg"])
+            widget.tag_configure("find_cur", background=p["accent"], foreground=p["bg"])
+        for i, (widget, start, end) in enumerate(self._find_matches):
+            if i != self._find_index:
+                widget.tag_add("find_all", start, end)
+        total = len(self._find_matches)
+        if not self.find_entry.get():
+            self.find_count.configure(text="")
+        elif not total:
+            self.find_count.configure(text="no results")
+        else:
+            widget, start, end = self._find_matches[self._find_index]
+            widget.tag_add("find_cur", start, end)
+            self.find_count.configure(text="%d of %d" % (self._find_index + 1, total))
+        for widget in (self.editor, self.preview):
+            widget.tag_raise("find_all")
+            widget.tag_raise("find_cur")
+
+    def _find_reveal(self) -> None:
+        widget, start, _end = self._find_matches[self._find_index]
+        widget.see(start)
+        if widget is self.preview:
+            widget.yview_scroll(-2, "units")
+
+    def toggle_replace(self) -> None:
+        if not self.find_visible:
+            self.show_find(replace=True)
+            return
+        self.replace_mode = not self.replace_mode
+        if self.replace_mode:
+            self.find_replace_row.pack(side="top", fill="x")
+            self.replace_entry.focus_set()
+        else:
+            self.find_replace_row.pack_forget()
+            self.find_entry.focus_set()
+        self._paint_find_buttons()
+
+    def _replace_ready(self) -> bool:
+        if not self.docs:
+            self._flash("Open a document first")
+            return False
+        if self.mode == "read":
+            self._flash("Read mode: switch to split or edit to replace")
+            return False
+        if not self.find_entry.get():
+            self._flash("Type something to find first")
+            return False
+        return True
+
+    def replace_current(self) -> None:
+        if not self._replace_ready():
+            return
+        # Re-scan first: the text may have changed since the last scan.
+        self.find_run(reset=False)
+        if not self._find_matches:
+            self.find_run()
+        if not self._find_matches:
+            return
+        widget, start, end = self._find_matches[self._find_index]
+        if widget is not self.editor:
+            self._flash("That match is in the preview — Replace all edits the source")
+            return
+        self.editor.delete(start, end)
+        self.editor.insert(start, self.replace_entry.get())
+        self._mark_dirty()
+        self.find_run(reset=False)
+
+    def replace_all(self) -> None:
+        if not self._replace_ready():
+            return
+        matches = [m for m in self._find_collect(self.find_entry.get())
+                   if m[0] is self.editor]
+        if not matches:
+            self._flash("No matches in the source")
+            return
+        replacement = self.replace_entry.get()
+        for _widget, start, end in reversed(matches):
+            self.editor.delete(start, end)
+            self.editor.insert(start, replacement)
+        self._mark_dirty()
+        self.find_run()
+        self._flash("Replaced %d occurrence%s" % (len(matches), "" if len(matches) == 1 else "s"))
+
+    # -- small tools ------------------------------------------------------- #
+
+    def goto_line(self) -> None:
+        if not self.docs:
+            self._flash("Open a document first")
+            return
+        if self.mode == "read":
+            self.set_mode("split")
+        total = max(1, int(self.editor.index("end-1c").split(".")[0]))
+        current = int(self.editor.index("insert").split(".")[0])
+        line = simpledialog.askinteger(
+            "Go to line", "Line number (1-%d):" % total, parent=self.root,
+            initialvalue=min(current, total), minvalue=1, maxvalue=total,
+        )
+        if not line:
+            return
+        self.editor.mark_set("insert", "%d.0" % line)
+        self.editor.see("%d.0" % line)
+        self.editor.focus_set()
+        self._flash("Line %d of %d" % (line, total))
+
+    def set_wrap(self) -> None:
+        self.wrap = bool(self.wrap_var.get())
+        self.editor.configure(wrap="word" if self.wrap else "none")
+        self.save_prefs()
+
+    def _edit(self, sequence: str) -> None:
+        if not self.docs:
+            return
+        if self.mode == "read":
+            self.set_mode("split")
+        self.editor.focus_set()
+        try:
+            self.editor.event_generate(sequence)
+        except tk.TclError:
+            pass
+
+    def _fill_recent_menu(self) -> None:
+        menu = self.recent_menu
+        menu.delete(0, "end")
+        entries = [r for r in self.recent if Path(r).is_file()][:8]
+        if not entries:
+            menu.add_command(label="(no recent files)", state="disabled")
+            return
+        for value in entries:
+            path = Path(value)
+            menu.add_command(label="%s  —  %s" % (path.name, path.parent),
+                             command=lambda p=value: self._open_paths([p]))
+
     def _flash(self, message: str) -> None:
+        self._flash_active = True
         self.stats_label.configure(text=message)
-        self.root.after(2200, self._restore_stats)
+        if self._flash_job is not None:
+            try:
+                self.root.after_cancel(self._flash_job)
+            except tk.TclError:
+                pass
+        self._flash_job = self.root.after(2200, self._restore_stats)
 
     def _restore_stats(self) -> None:
+        self._flash_job = None
+        self._flash_active = False
         try:
             if self.root.winfo_exists():
                 self.update_stats()
@@ -1214,6 +1585,10 @@ class Markvist:
             "Ctrl+Shift+S   save as\n"
             "Ctrl+W   close tab\n"
             "Ctrl+Tab   next tab\n"
+            "Ctrl+F   find in source and preview\n"
+            "Ctrl+H   find and replace\n"
+            "F3 / Shift+F3   next / previous match\n"
+            "Ctrl+G   go to line\n"
             "Ctrl+=   zoom in\n"
             "Ctrl+-   zoom out\n"
             "Ctrl+0   reset zoom\n"
