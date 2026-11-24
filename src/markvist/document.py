@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .disk import Signature
+
 UNTITLED = "untitled.md"
 
 
@@ -15,6 +17,8 @@ class Document:
     saved_text: str = ""
     dirty: bool = False
     title: str | None = None  # name of an untitled buffer
+    disk_sig: Signature | None = None  # state of the file we last read or wrote
+    conflict: bool = False  # the file moved on since: never overwrite it silently
 
     @property
     def name(self) -> str:
@@ -24,7 +28,9 @@ class Document:
 
     @property
     def label(self) -> str:
-        """Name plus a dot when there are unsaved changes."""
+        """Name plus a dot for unsaved changes, or a warning when the file moved on."""
+        if self.conflict:
+            return "⚠ " + self.name
         return ("● " if self.dirty else "") + self.name
 
     def update(self, text: str) -> None:
@@ -36,5 +42,6 @@ class Document:
         self.text = text
         self.saved_text = text
         self.dirty = False
+        self.conflict = False
         if path is not None:
             self.path = path

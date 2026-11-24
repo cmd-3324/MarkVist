@@ -10,6 +10,7 @@ from itertools import zip_longest
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog
 
+from .disk import backup, read_text, same_file, signature
 from .document import UNTITLED, Document
 from .markdown import detect_rtl, parse_markdown
 from .prefs import read_config, read_shadows, write_config, write_shadows
@@ -487,6 +488,8 @@ class Markvist:
         file_menu.add_command(label="Save", accelerator="Ctrl+S", command=self.save_file)
         file_menu.add_command(label="Save as…", accelerator="Ctrl+Shift+S",
                               command=lambda: self.save_file(save_as=True))
+        file_menu.add_command(label="Reload from disk", accelerator="F5",
+                              command=self.reload_file)
         file_menu.add_separator()
         file_menu.add_command(label="Close tab", accelerator="Ctrl+W", command=self.close_tab)
         file_menu.add_command(label="Exit", command=self.on_close)
@@ -597,6 +600,7 @@ class Markvist:
         root.bind_all("<F3>", lambda _e: self._then_break(lambda: self.find_next(1)))
         root.bind_all("<Shift-F3>", lambda _e: self._then_break(lambda: self.find_next(-1)))
         root.bind_all("<Control-g>", lambda _e: self._then_break(self.goto_line))
+        root.bind_all("<F5>", lambda _e: self._then_break(self.reload_file))
         root.bind_all("<Escape>", lambda _e: self._then_break(self.hide_find))
         root.bind_all("<Control-Tab>", lambda _e: self._then_break(self.next_tab))
         root.bind_all("<Control-Shift-Tab>", lambda _e: self._then_break(self.previous_tab))
@@ -803,8 +807,16 @@ class Markvist:
     def _autosave_now(self) -> None:
         self._autosave_job = None
         doc = self._doc()
-        if self.autosave and doc is not None and doc.dirty and doc.path is not None:
-            self.save_file()
+        if not self.autosave or doc is None or not doc.dirty or doc.path is None:
+            return
+        if self._changed_on_disk(doc, doc.path):
+            if not doc.conflict:  # never prompt from a timer: pause and tell the user
+                doc.conflict = True
+                self._rebuild_tabs()
+                self._update_title()
+                self._flash("%s changed on disk — auto save paused, press Ctrl+S" % doc.name)
+            return
+        self.save_file()
 
     # -- mode -------------------------------------------------------------- #
 
@@ -1012,18 +1024,14 @@ class Markvist:
                 continue
 
             try:
-                text = p.read_text(encoding="utf-8-sig")
-            except UnicodeDecodeError:
-                try:
-                    text = p.read_text(encoding="utf-8", errors="replace")
-                except OSError as exc:
-                    messagebox.showerror("Could not open file", str(exc), parent=self.root)
-                    continue
+                text = read_text(p)
             except OSError as exc:
                 messagebox.showerror("Could not open file", str(exc), parent=self.root)
                 continue
 
-            self.docs.append(Document(path=p, text=text, saved_text=text))
+            self.docs.append(
+                Document(path=p, text=text, saved_text=text, disk_sig=signature(p))
+            )
             self._remember_recent(p)
             last_index = len(self.docs) - 1
             opened += 1
@@ -1112,8 +1120,9 @@ class Markvist:
             return
         name = doc.name
         self.file_label.configure(text=name)
-        self.dirty_label.configure(text="●" if doc.dirty else "")
-        self.root.title(("%s%s — %s" % ("• " if doc.dirty else "", name, APP_NAME)))
+        self.dirty_label.configure(text="⚠" if doc.conflict else "●" if doc.dirty else "")
+        mark = "⚠ " if doc.conflict else "• " if doc.dirty else ""
+        self.root.title("%s%s — %s" % (mark, name, APP_NAME))
         self.save_btn.configure(state="normal" if doc.dirty else "disabled")
 
     def _on_modified(self, _event=None) -> None:
@@ -1230,6 +1239,17 @@ class Markvist:
             if path.suffix.lower() not in MD_SUFFIXES:
                 path = path.with_suffix(".md")
 
+        if doc.path is not None and same_file(path, doc.path) and self._changed_on_disk(doc, path):
+            choice = self._ask_conflict(doc)
+            if choice == "reload":
+                self._reload_doc(doc)
+                return False
+            if choice == "copy":
+                return self._save_copy(doc, content, path)
+            if choice != "mine":
+                return False
+            backup(path)  # keep the version this write is about to replace
+
         try:
             path.write_text(content, encoding="utf-8")
         except OSError as exc:
@@ -1237,11 +1257,137 @@ class Markvist:
             return False
 
         doc.commit(content, path)
+        doc.disk_sig = signature(path)
         self._remember_recent(path)
         self._write_shadows()
         self._rebuild_tabs()
         self._update_title()
         self._flash("Saved %s" % path.name)
+        return True
+
+    def _changed_on_disk(self, doc: Document, path: Path) -> bool:
+        """True when the file no longer holds what this tab last read or wrote."""
+        return doc.disk_sig is not None and signature(path) != doc.disk_sig
+
+    def _ask_conflict(self, doc: Document) -> str | None:
+        """Ask what to do about a file that changed on disk: reload, keep mine, copy."""
+        p = self.palette
+        s = self.ui_scale
+        answer: list[str | None] = [None]
+        box = tk.Toplevel(self.root)
+        box.title("File changed on disk")
+        box.transient(self.root)
+        box.resizable(False, False)
+        box.configure(bg=p["bg"])
+
+        def pick(value: str | None) -> None:
+            answer[0] = value
+            box.destroy()
+
+        box.protocol("WM_DELETE_WINDOW", lambda: pick(None))
+        tk.Label(
+            box, text="%s changed on disk" % doc.name, bg=p["bg"], fg=p["fg"], anchor="w",
+            font=(self.app_family, -int(13 * s), "bold"),
+        ).pack(fill="x", padx=20, pady=(18, 6))
+        tk.Label(
+            box,
+            text="Saving now would overwrite that version.\n"
+                 "Reload drops your edits here. Keep mine replaces the file and\n"
+                 "copies its current contents to %s.bak. Save a copy writes elsewhere." % doc.name,
+            bg=p["bg"], fg=p["muted"], anchor="w", justify="left",
+            font=(self.app_family, -int(11 * s)),
+        ).pack(fill="x", padx=20, pady=(0, 14))
+
+        row = tk.Frame(box, bg=p["bg"])
+        row.pack(fill="x", padx=20, pady=(0, 18))
+        choices = (
+            ("Keep mine", "mine", p["accent"], p["bg"]),
+            ("Save a copy…", "copy", p["bg_inset"], p["fg"]),
+            ("Reload from disk", "reload", p["bg_inset"], p["fg"]),
+        )
+        for text, value, bg, fg in choices:
+            tk.Button(
+                row, text=text, command=lambda v=value: pick(v), bd=0, padx=12, pady=5,
+                bg=bg, fg=fg, activebackground=p["border"], activeforeground=fg,
+                highlightthickness=0, cursor="hand2", takefocus=0,
+                font=(self.app_family, -int(11 * s)),
+            ).pack(side="left", padx=(0, 8))
+
+        box.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - box.winfo_reqwidth()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - box.winfo_reqheight()) // 3
+        box.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        box.grab_set()
+        box.wait_window()
+        return answer[0]
+
+    def reload_file(self) -> None:
+        """Reload the active tab from disk, asking before dropping unsaved edits."""
+        doc = self._doc()
+        if doc is None:
+            return
+        if doc.path is None:
+            self._flash("This tab has no file on disk yet")
+            return
+        if doc.dirty and not messagebox.askyesno(
+            "Reload from disk",
+            "Discard your unsaved changes to %s and reload the file?" % doc.name,
+            parent=self.root,
+        ):
+            return
+        self._reload_doc(doc)
+
+    def _reload_doc(self, doc: Document) -> None:
+        """Replace the tab's contents with the version currently on disk."""
+        if doc.path is None:
+            return
+        try:
+            text = read_text(doc.path)
+        except OSError as exc:
+            messagebox.showerror("Could not reload file", str(exc), parent=self.root)
+            return
+
+        doc.commit(text)
+        doc.disk_sig = signature(doc.path)
+        if doc is self._doc():
+            self._loading = True
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", text)
+            self.editor.edit_reset()
+            self.editor.edit_modified(False)
+            self._loading = False
+            self.render_preview()
+        self._rebuild_tabs()
+        self._update_title()
+        self._flash("Reloaded %s from disk" % doc.name)
+
+    def _save_copy(self, doc: Document, content: str, path: Path) -> bool:
+        """Write the buffer to a new file and leave the changed file alone."""
+        chosen = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save a copy",
+            defaultextension=".md",
+            initialfile="%s-mine.md" % path.stem,
+            filetypes=[("Markdown", "*.md")],
+        )
+        if not chosen:
+            return False
+        target = Path(chosen)
+        if target.suffix.lower() not in MD_SUFFIXES:
+            target = target.with_suffix(".md")
+        try:
+            target.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Could not save file", str(exc), parent=self.root)
+            return False
+
+        doc.commit(content, target)
+        doc.disk_sig = signature(target)
+        self._remember_recent(target)
+        self._write_shadows()
+        self._rebuild_tabs()
+        self._update_title()
+        self._flash("Saved a copy as %s" % target.name)
         return True
 
     def _confirm_discard(self, doc: Document) -> bool:

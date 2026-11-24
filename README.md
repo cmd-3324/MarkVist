@@ -35,6 +35,10 @@ hundred an editor platform needs.
 - **Themes** — light and dark, `Ctrl+T`, remembered.
 - **Auto save** — on by default, writes 900 ms after you stop typing (toggle in
   the View menu; untitled files still ask where to save).
+- **No silent overwrites** — when a file changed on disk since markvist read it,
+  auto save pauses and the tab shows `⚠`; saving then offers *Reload from disk*,
+  *Keep mine* (the replaced file is copied to `name.md.bak`) or *Save a copy*.
+  `F5` reloads any tab on demand.
 - **Fonts** — separate reading font for the document and monospace font for the
   source pane; the app chrome is never restyled.
 - **Modern document rendering** — a real type scale with rules under H1/H2,
@@ -133,6 +137,23 @@ exit. It is reopened on the next launch as a dirty untitled tab, so a crash or
 a closed window does not lose it. Saving the note to a real file, closing the
 tab, or answering “No” to the unsaved-changes prompt at exit removes its shadow.
 
+### Files changed by other programs
+
+Each tab remembers the file's size and modification time as it was read or
+written. Before any write it compares them again; if they differ, the write
+stops and you choose:
+
+- **Reload from disk** — the tab takes the file's version and your edits in that
+  tab are dropped.
+- **Keep mine** — the tab is written over the file, and the version being
+  replaced is copied first to `name.md.bak` next to it.
+- **Save a copy…** — the tab is written to a file you pick and the changed file
+  is left untouched.
+
+Auto save never opens a dialog from its timer: it just pauses, marks the tab
+with `⚠`, and says so in the status bar. `Ctrl+S` then asks. Selecting
+anything, cancelling the dialog, or closing it leaves the file alone.
+
 ## Right-to-left text (Persian, Arabic, Hebrew)
 
 The app detects an RTL document and lays it out right to left: paragraphs and
@@ -207,7 +228,9 @@ headless. CI runs them on Ubuntu and Windows for Python 3.10 and 3.13.
   the preview pane is clipped rather than squeezed into columns.
 - Shadow copies hold untitled notes only; saved files rely on the file itself
   and on auto save.
-- No file-watching: if another program edits the file, reopen it.
+- Outside changes are caught when markvist is about to write, not by a file
+  watcher: a tab with no unsaved edits keeps showing what it loaded until you
+  reload it with `F5` (or save over it, which asks first).
 - The find bar has no regular-expression mode; it matches plain text with
   optional case and whole-word sensitivity.
 
