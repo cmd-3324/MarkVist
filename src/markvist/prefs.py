@@ -29,3 +29,34 @@ def write_config(data: dict) -> None:
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except OSError:
         pass
+
+
+# -- shadow copies of unsaved untitled notes -------------------------------- #
+
+
+def shadows_path() -> Path:
+    return config_path().parent / "shadows.json"
+
+
+def read_shadows() -> list[dict]:
+    """Unsaved untitled notes written by earlier runs."""
+    try:
+        data = json.loads(shadows_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    docs = data.get("docs") if isinstance(data, dict) else data
+    if not isinstance(docs, list):
+        return []
+    return [d for d in docs if isinstance(d, dict) and isinstance(d.get("text"), str)]
+
+
+def write_shadows(docs: list[dict]) -> None:
+    path = shadows_path()
+    try:
+        if not docs:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"docs": docs}, indent=2), encoding="utf-8")
+    except OSError:
+        pass

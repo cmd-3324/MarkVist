@@ -6,12 +6,13 @@ import re
 import sys
 import tkinter as tk
 import webbrowser
+from itertools import zip_longest
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog
 
-from .document import Document
+from .document import UNTITLED, Document
 from .markdown import detect_rtl, parse_markdown
-from .prefs import read_config, write_config
+from .prefs import read_config, read_shadows, write_config, write_shadows
 from .render import PreviewRenderer
 from .theme import (
     APP_NAME,
@@ -65,6 +66,7 @@ class Markvist:
         self._render_job = None
         self._preview_width = 0
         self._autosave_job = None
+        self._shadow_job = None
         self._flash_job = None
         self._flash_active = False
         self._loading = False
@@ -96,8 +98,14 @@ class Markvist:
 
         if path:
             self._open_paths([path])
-        elif not self._restore_session():
+        else:
+            self._restore_session()
+        recovered = self._recover_shadows()
+        if not self.docs:
             self._show_welcome()
+        elif recovered:
+            self._flash("Recovered %d unsaved note%s"
+                        % (recovered, "" if recovered == 1 else "s"))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -146,19 +154,76 @@ class Markvist:
             paths.append(str(doc.path))
         return paths[:MAX_TABS], active
 
-    def _restore_session(self) -> bool:
+    def _restore_session(self) -> None:
         """Reopen the tabs from the previous run, if there were any."""
         if not self.restore_session or not self.session_paths:
-            return False
+            return
         paths = [p for p in self.session_paths if Path(p).is_file()][:MAX_TABS]
         if not paths:
-            return False
+            return
         self._open_paths(paths, quiet=True)
         if not self.docs:
-            return False
+            return
         self._activate(min(self.session_active, len(self.docs) - 1))
         self._flash("Restored %d tab%s" % (len(self.docs), "" if len(self.docs) == 1 else "s"))
-        return True
+
+    # -- shadow recovery ---------------------------------------------------- #
+
+    def _next_untitled_name(self) -> str:
+        taken = {doc.name for doc in self.docs}
+        if UNTITLED not in taken:
+            return UNTITLED
+        stem = UNTITLED.removesuffix(".md")
+        n = 2
+        while "%s %d.md" % (stem, n) in taken:
+            n += 1
+        return "%s %d.md" % (stem, n)
+
+    def _schedule_shadow(self) -> None:
+        """Write shadow copies shortly after the last edit of an untitled tab."""
+        if not any(doc.path is None for doc in self.docs):
+            return
+        if self._shadow_job is not None:
+            try:
+                self.root.after_cancel(self._shadow_job)
+            except tk.TclError:
+                pass
+        self._shadow_job = self.root.after(700, self._write_shadows)
+
+    def _write_shadows(self) -> None:
+        """Mirror unsaved untitled notes to disk; the idempotent single writer."""
+        if self._shadow_job is not None:
+            self.root.after_cancel(self._shadow_job)  # fold in any pending write
+            self._shadow_job = None
+        write_shadows([
+            {"name": doc.name, "text": doc.text}
+            for doc in self.docs
+            if doc.path is None and doc.text.strip()
+        ])
+
+    def _recover_shadows(self) -> int:
+        """Reopen untitled notes that were never saved, from the last run."""
+        restored = 0
+        for entry in read_shadows():
+            if len(self.docs) >= MAX_TABS:
+                break
+            text = entry["text"]
+            if not text.strip():
+                continue
+            name = entry.get("name")
+            if (not isinstance(name, str) or not name.strip()
+                    or any(doc.name == name for doc in self.docs)):
+                name = self._next_untitled_name()
+            self.docs.append(Document(text=text, saved_text="", dirty=True, title=name))
+            restored += 1
+        if not restored:
+            return 0
+        if self.shown is None:
+            self._activate(len(self.docs) - restored)
+        else:
+            self._rebuild_tabs()
+            self._update_title()
+        return restored
 
     def save_prefs(self) -> None:
         session_paths, session_active = self._session_state()
@@ -888,7 +953,7 @@ class Markvist:
             self._warn_limit()
             return
         self._stash()
-        self.docs.append(Document())
+        self.docs.append(Document(title=self._next_untitled_name()))
         self._activate(len(self.docs) - 1)
         self._flash("New file")
 
@@ -1001,6 +1066,7 @@ class Markvist:
             self._rebuild_tabs()
             self._show_welcome()
             self.render_preview()
+            self._write_shadows()
             return
 
         if index < self.active:
@@ -1009,6 +1075,7 @@ class Markvist:
             self.active = min(self.active, len(self.docs) - 1)
         self.shown = None
         self._activate(self.active, stash=False)
+        self._write_shadows()
 
     # -- start screen ------------------------------------------------------ #
 
@@ -1055,6 +1122,7 @@ class Markvist:
             return
         self.editor.edit_modified(False)
         self._mark_dirty()
+        self._schedule_shadow()
         if self.find_visible:
             self.find_run(reset=False)
 
@@ -1153,7 +1221,7 @@ class Markvist:
                 parent=self.root,
                 title="Save Markdown file",
                 defaultextension=".md",
-                initialfile=path.name if path else "untitled.md",
+                initialfile=path.name if path else doc.name,
                 filetypes=[("Markdown", "*.md")],
             )
             if not chosen:
@@ -1170,6 +1238,7 @@ class Markvist:
 
         doc.commit(content, path)
         self._remember_recent(path)
+        self._write_shadows()
         self._rebuild_tabs()
         self._update_title()
         self._flash("Saved %s" % path.name)
@@ -1192,6 +1261,7 @@ class Markvist:
 
     def on_close(self) -> None:
         self._stash()
+        self._write_shadows()  # never lose typed notes, even if the close is cancelled
         dirty = [doc for doc in self.docs if doc.dirty]
         if dirty:
             answer = messagebox.askyesnocancel(
@@ -1207,8 +1277,11 @@ class Markvist:
                     self._activate(self.docs.index(doc), stash=False)
                     if not self.save_file():
                         return
+                self._write_shadows()
+            else:
+                write_shadows([])  # discarded on purpose: do not recover it
 
-        for job in (self._render_job, self._autosave_job, self._flash_job):
+        for job in (self._render_job, self._autosave_job, self._flash_job, self._shadow_job):
             if job is not None:
                 try:
                     self.root.after_cancel(job)
@@ -1320,11 +1393,19 @@ class Markvist:
         self._find_reveal()
 
     def _find_collect(self, query: str) -> list:
+        """Occurrences of the query, each with its range in both panes.
+
+        A hit that appears in the source and again in the rendered text is a
+        single occurrence, so the counter never doubles it, but it is still
+        highlighted in both panes. A hit that exists in only one pane (a URL
+        in the source, a bullet glyph in the preview) also counts once.
+        """
         if not query:
             return []
-        found = self._scan(self.editor, query)
-        found.extend(self._scan(self.preview, query))
-        return found
+        source = self._scan(self.editor, query)
+        preview = self._scan(self.preview, query)
+        return [{"source": src, "preview": prev}
+                for src, prev in zip_longest(source, preview)]
 
     def _scan(self, widget: tk.Text, query: str) -> list:
         matches = []
@@ -1340,7 +1421,7 @@ class Markvist:
                 break
             end = "%s+%dc" % (hit, size)
             if not self.find_whole or self._word_bounded(widget, hit, end):
-                matches.append((widget, hit, end))
+                matches.append((hit, end))
             index = end
         return matches
 
@@ -1349,6 +1430,11 @@ class Markvist:
         before = widget.get("%s-1c" % start, start)
         after = widget.get(end, "%s+1c" % end)
         return all(not (ch.isalnum() or ch == "_") for ch in (before, after))
+
+    @property
+    def _panes(self) -> tuple[tuple[tk.Text, str], ...]:
+        """The two widgets a match can appear in, with its occurrence key."""
+        return ((self.editor, "source"), (self.preview, "preview"))
 
     def _find_clear(self) -> None:
         for widget in (self.editor, self.preview):
@@ -1361,27 +1447,32 @@ class Markvist:
         for widget in (self.editor, self.preview):
             widget.tag_configure("find_all", background=p["accent_soft"], foreground=p["fg"])
             widget.tag_configure("find_cur", background=p["accent"], foreground=p["bg"])
-        for i, (widget, start, end) in enumerate(self._find_matches):
-            if i != self._find_index:
-                widget.tag_add("find_all", start, end)
         total = len(self._find_matches)
+        for i, occurrence in enumerate(self._find_matches):
+            tag = "find_cur" if i == self._find_index else "find_all"
+            for widget, pane in self._panes:
+                span = occurrence[pane]
+                if span:
+                    widget.tag_add(tag, span[0], span[1])
         if not self.find_entry.get():
             self.find_count.configure(text="")
         elif not total:
             self.find_count.configure(text="no results")
         else:
-            widget, start, end = self._find_matches[self._find_index]
-            widget.tag_add("find_cur", start, end)
             self.find_count.configure(text="%d of %d" % (self._find_index + 1, total))
         for widget in (self.editor, self.preview):
             widget.tag_raise("find_all")
             widget.tag_raise("find_cur")
 
     def _find_reveal(self) -> None:
-        widget, start, _end = self._find_matches[self._find_index]
-        widget.see(start)
-        if widget is self.preview:
-            widget.yview_scroll(-2, "units")
+        occurrence = self._find_matches[self._find_index]
+        for widget, pane in self._panes:
+            span = occurrence[pane]
+            if not span:
+                continue
+            widget.see(span[0])
+            if widget is self.preview:
+                widget.yview_scroll(-2, "units")
 
     def toggle_replace(self) -> None:
         if not self.find_visible:
@@ -1414,33 +1505,34 @@ class Markvist:
         # Re-scan first: the text may have changed since the last scan.
         self.find_run(reset=False)
         if not self._find_matches:
-            self.find_run()
-        if not self._find_matches:
             return
-        widget, start, end = self._find_matches[self._find_index]
-        if widget is not self.editor:
-            self._flash("That match is in the preview — Replace all edits the source")
+        span = self._find_matches[self._find_index]["source"]
+        if span is None:
+            self._flash("That occurrence only exists in the preview")
             return
-        self.editor.delete(start, end)
-        self.editor.insert(start, self.replace_entry.get())
+        self.editor.delete(span[0], span[1])
+        self.editor.insert(span[0], self.replace_entry.get())
         self._mark_dirty()
-        self.find_run(reset=False)
+        self._schedule_shadow()
+        self.render_preview()  # re-renders, and re-scans the highlights with it
 
     def replace_all(self) -> None:
         if not self._replace_ready():
             return
-        matches = [m for m in self._find_collect(self.find_entry.get())
-                   if m[0] is self.editor]
-        if not matches:
+        spans = [occ["source"] for occ in self._find_collect(self.find_entry.get())
+                 if occ["source"]]
+        if not spans:
             self._flash("No matches in the source")
             return
         replacement = self.replace_entry.get()
-        for _widget, start, end in reversed(matches):
+        for start, end in reversed(spans):
             self.editor.delete(start, end)
             self.editor.insert(start, replacement)
         self._mark_dirty()
+        self._schedule_shadow()
+        self.render_preview()
         self.find_run()
-        self._flash("Replaced %d occurrence%s" % (len(matches), "" if len(matches) == 1 else "s"))
+        self._flash("Replaced %d occurrence%s" % (len(spans), "" if len(spans) == 1 else "s"))
 
     # -- small tools ------------------------------------------------------- #
 

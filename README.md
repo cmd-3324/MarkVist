@@ -15,9 +15,13 @@ hundred an editor platform needs.
 - **Restores your last session** — the tabs you had open come back on the next
   launch, with the same one active. Untitled buffers are not restored.
 - **Find and replace** — `Ctrl+F` searches the source and the rendered preview
-  together, highlights every hit, and steps through them with `F3` / `Shift+F3`
-  and an `n of m` counter; `Ctrl+H` adds replace and replace-all, with case and
-  whole-word toggles.
+  together, highlights every hit in **both** panes, counts each occurrence once
+  even though it appears twice on screen, and steps through them with `F3` /
+  `Shift+F3` and an `n of m` counter; `Ctrl+H` adds replace and replace-all,
+  with case and whole-word toggles.
+- **Unsaved notes survive a restart** — untitled tabs are shadowed to disk as
+  you type and reopened (still unsaved, still marked with a dot) on the next
+  launch, even after a crash.
 - **Editing tools** — undo/redo, cut/copy/paste, go to line (`Ctrl+G`), word-wrap
   toggle and an *Open recent* menu.
 - **New file, open file, open folder** — `Ctrl+N`, `Ctrl+O` (multi-select), and
@@ -109,12 +113,25 @@ and the visual RTL preview toggle.
 
 ### Find and replace
 
-The find bar searches **both** panes, so the counter and `F3` cover source hits
-and rendered hits together, and every match is highlighted in the pane it lives
-in. Replacement always edits the **source** — that is the file. If the current
-match happens to be a rendered one, *Replace* says so; *Replace all* rewrites
-every source occurrence and the preview follows. Replacing is refused in Read
+The find bar searches **both** panes but counts **occurrences**, not highlights:
+the same word in the source and in the rendered text is one entry in the
+`n of m` counter, highlighted in both places at once. Text that only exists in
+one pane (a link target in the source, a bullet glyph in the preview) counts
+once and is highlighted where it lives.
+
+Replacement always edits the **source** — that is the file — and after a
+*Replace all* the preview is re-rendered before the counter and the “Replaced N
+occurrences” message are updated, so both agree. If the current occurrence
+only exists in the preview, *Replace* says so. Replacing is refused in Read
 mode, where the source is not editable.
+
+### Unsaved notes
+
+An untitled tab has no file to save to, so its text is written to
+`%APPDATA%\markvist\shadows.json` about a second after you stop typing, and on
+exit. It is reopened on the next launch as a dirty untitled tab, so a crash or
+a closed window does not lose it. Saving the note to a real file, closing the
+tab, or answering “No” to the unsaved-changes prompt at exit removes its shadow.
 
 ## Right-to-left text (Persian, Arabic, Hebrew)
 
@@ -188,6 +205,8 @@ headless. CI runs them on Ubuntu and Windows for Python 3.10 and 3.13.
   text and stays clickable.
 - Tables use their natural width and scroll with the text; a table wider than
   the preview pane is clipped rather than squeezed into columns.
+- Shadow copies hold untitled notes only; saved files rely on the file itself
+  and on auto save.
 - No file-watching: if another program edits the file, reopen it.
 - The find bar has no regular-expression mode; it matches plain text with
   optional case and whole-word sensitivity.

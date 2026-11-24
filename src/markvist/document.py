@@ -14,10 +14,13 @@ class Document:
     text: str = ""
     saved_text: str = ""
     dirty: bool = False
+    title: str | None = None  # name of an untitled buffer
 
     @property
     def name(self) -> str:
-        return self.path.name if self.path else UNTITLED
+        if self.path is not None:
+            return self.path.name
+        return self.title or UNTITLED
 
     @property
     def label(self) -> str:
