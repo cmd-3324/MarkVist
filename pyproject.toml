@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "markvist"
+version = "0.2.0"
+description = "A tiny Markdown viewer and editor built with Tkinter"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["markdown", "viewer", "editor", "tkinter", "rtl", "persian"]
+classifiers = [
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Text Editors :: Documentation",
+    "Topic :: Text Processing :: Markup",
+]
+
+[project.scripts]
+markvist = "markvist.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
