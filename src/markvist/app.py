@@ -12,6 +12,7 @@ from tkinter import filedialog, font as tkfont, messagebox, simpledialog
 
 from .disk import backup, read_text, same_file, signature
 from .document import UNTITLED, Document
+from .icon import apply_icon
 from .markdown import detect_rtl, parse_markdown
 from .prefs import read_config, read_shadows, write_config, write_shadows
 from .render import PreviewRenderer
@@ -260,6 +261,7 @@ class Markvist:
     def _build_ui(self) -> None:
         root = self.root
         root.title(APP_NAME)
+        apply_icon(root)
         root.geometry(self._geometry)
         root.minsize(760, 460)
 
@@ -1312,12 +1314,27 @@ class Markvist:
                 highlightthickness=0, cursor="hand2", takefocus=0,
                 font=(self.app_family, -int(11 * s)),
             ).pack(side="left", padx=(0, 8))
+        tk.Label(
+            row, text="Enter keeps mine · Esc cancels", bg=p["bg"], fg=p["muted"],
+            font=(self.app_family, -int(10 * s)),
+        ).pack(side="right")
+
+        def answer_with(value: str | None):
+            def handle(_event=None) -> str:
+                pick(value)
+                return "break"
+            return handle
+
+        box.bind("<Escape>", answer_with(None))
+        box.bind("<Return>", answer_with("mine"))
+        box.bind("<KP_Enter>", answer_with("mine"))
 
         box.update_idletasks()
         x = self.root.winfo_rootx() + (self.root.winfo_width() - box.winfo_reqwidth()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - box.winfo_reqheight()) // 3
         box.geometry("+%d+%d" % (max(0, x), max(0, y)))
         box.grab_set()
+        box.focus_set()  # Enter and Escape work before anyone clicks
         box.wait_window()
         return answer[0]
 

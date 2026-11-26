@@ -37,3 +37,6 @@ scratch/
 
 # PyInstaller
 *.spec
+Outputs/
+Output/
+setup.iss
