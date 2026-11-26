@@ -73,19 +73,21 @@ python -m pip install -e .   # optional, gives you the `markvist` command
 markvist                     # or: python -m markvist
 ```
 
-On Windows you can also double-click `markvist.bat`, which puts `src/` on the
-path and launches the app with `pythonw` (no console window), or run the
-prebuilt `dist\markvist.exe` described below. To make `.md`
-files open in markvist, use *Open with → Choose another app → Look for another
-app* and pick `markvist.bat`.
+On Windows the simplest option is the prebuilt `dist\markvist.exe` described
+below; from a source checkout, `pythonw -m markvist` starts the app without a
+console window. To make `.md` files open in markvist, use *Open with → Choose
+another app → Look for another app* and pick `dist\markvist.exe`.
 
 ## Standalone executable (Windows)
 
-`build_exe.bat` packages the app into one self-contained file with PyInstaller:
+The release download is one self-contained file built with PyInstaller. To
+build it yourself from a source checkout:
 
 ```bat
 python -m pip install pyinstaller
-build_exe.bat
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name markvist ^
+    --icon PYTHON_LOGO.ico --add-data "PYTHON_LOGO.ico;." --paths src ^
+    exe_entry.py
 ```
 
 The result is `dist\markvist.exe` — a single file with Python and Tk inside
@@ -96,18 +98,26 @@ as an *Open with* target for `.md` files.
 Rebuild it after changing the source; `build/`, `dist/` and the generated
 `markvist.spec` are ignored by git.
 
+The `build_exe.bat` shortcut for that command, `build_installer.bat` and
+`setup.iss` are maintainer files kept outside the repository.
+
 ### Installer
 
-`build_installer.bat` compiles `setup.iss` with Inno Setup 6 into
-`Output\markvist-<version>-setup.exe`: a per-user installer that adds Start-menu
-and optional desktop shortcuts and an uninstaller. Build the exe first. The
-version comes from `pyproject.toml`, and the installer is 64-bit only (it also
-installs on ARM64 Windows through x64 emulation).
+The installer is compiled from the Inno Setup script `setup.iss` with Inno
+Setup 6.3 or newer into `Output\markvist-<version>-setup.exe`: a per-user
+installer that adds Start-menu and optional desktop shortcuts and an
+uninstaller. Like the build scripts, `setup.iss` is a maintainer file and is
+not part of the repository, so this applies to building from a maintainer
+checkout:
 
 ```bat
-build_exe.bat
-build_installer.bat
+"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=<version> setup.iss
 ```
+
+Build the exe first. The version comes from `pyproject.toml` and is passed in
+as `AppVersion`; compiling the script directly in the Inno Setup IDE reads it
+from that file instead. The installer is 64-bit only (it also installs on ARM64
+Windows through x64 emulation).
 
 ## Keyboard shortcuts
 
@@ -216,6 +226,7 @@ markvist/
 │   ├── __main__.py      python -m markvist
 │   ├── app.py           window, toolbar, menus, file handling
 │   ├── bidi.py          visual-order reordering for RTL previews
+│   ├── crash.py         crash log and the friendly error dialog
 │   ├── document.py      one open document (one tab)
 │   ├── markdown.py      parser: Markdown -> block structures
 │   ├── prefs.py         JSON config in %APPDATA%/markvist
@@ -224,13 +235,12 @@ markvist/
 │   └── widgets.py       the three-position view switch
 ├── tests/               unittest suite (no display required)
 ├── pyproject.toml
-├── build_exe.bat        PyInstaller one-file build
-├── build_installer.bat  Inno Setup installer build
-├── setup.iss            installer script (result lands in Output/)
 ├── exe_entry.py         entry script used by the build
-├── markvist.bat         Windows launcher (needs Python)
 └── README.md
 ```
+
+`build_exe.bat`, `build_installer.bat` and `setup.iss` live next to those files
+in a maintainer checkout but are not tracked.
 
 ## Development
 
