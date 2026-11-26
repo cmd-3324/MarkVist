@@ -236,4 +236,4 @@ headless. CI runs them on Ubuntu and Windows for Python 3.10 and 3.13.
 
 ## License
 
-No license file yet — add one before publishing if you want others to reuse it.
+MIT 2026
