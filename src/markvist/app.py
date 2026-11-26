@@ -10,6 +10,7 @@ from itertools import zip_longest
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog
 
+from . import crash
 from .disk import backup, read_document, same_file, signature, write_document
 from .document import UNTITLED, Document
 from .icon import apply_icon
@@ -1883,6 +1884,32 @@ class Markvist:
         )
 
 
+def _install_crash_log(root: tk.Tk) -> crash.Reporter:
+    """Keep a crash log, and answer a failed window action with a plain sentence."""
+    reporter = crash.Reporter()
+
+    def notify(exc_info: tuple, context: str, path) -> None:
+        if not reporter.wants_dialog:
+            return
+        try:
+            messagebox.showerror(
+                "markvist hit a problem",
+                crash.dialog_message(exc_info[1], path, context),
+                parent=root,
+            )
+        except Exception:  # the window may already be gone
+            pass
+
+    def callback(etype, value, tb) -> None:
+        info = (etype, value, tb)
+        path = reporter.handle(info, "a window action")
+        notify(info, "a window action", path)
+
+    crash.install_excepthooks(reporter, notify)
+    root.report_callback_exception = callback
+    return reporter
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
 
@@ -1900,6 +1927,7 @@ def main(argv: list[str] | None = None) -> int:
     except tk.TclError:
         pass
 
+    _install_crash_log(root)
     Markvist(root, argv[0] if argv else None)
     root.mainloop()
     return 0
