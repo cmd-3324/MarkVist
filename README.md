@@ -172,6 +172,14 @@ Auto save never opens a dialog from its timer: it just pauses, marks the tab
 with `⚠`, and says so in the status bar. `Ctrl+S` then asks. Selecting
 anything, cancelling the dialog, or closing it leaves the file alone.
 
+### If something goes wrong
+
+An unhandled error is never allowed to vanish silently: it is written to
+`%APPDATA%\markvist\crash.log`, next to `config.json`, and a short dialog says
+what happened and where that file is. The log keeps the most recent reports
+and drops the oldest, so it never grows without bound. Attach it when
+reporting a bug.
+
 ## Right-to-left text (Persian, Arabic, Hebrew)
 
 The app detects an RTL document and lays it out right to left: paragraphs and
