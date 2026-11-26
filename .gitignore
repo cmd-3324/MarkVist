@@ -39,3 +39,7 @@ scratch/
 *.spec
 Outputs/
 Output/
+
+# Local build scripts and installer sources (live on disk only)
+*.bat
+*.iss
