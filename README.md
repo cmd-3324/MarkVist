@@ -100,7 +100,9 @@ Rebuild it after changing the source; `build/`, `dist/` and the generated
 
 `build_installer.bat` compiles `setup.iss` with Inno Setup 6 into
 `Output\markvist-<version>-setup.exe`: a per-user installer that adds Start-menu
-and optional desktop shortcuts and an uninstaller. Build the exe first.
+and optional desktop shortcuts and an uninstaller. Build the exe first. The
+version comes from `pyproject.toml`, and the installer is 64-bit only (it also
+installs on ARM64 Windows through x64 emulation).
 
 ```bat
 build_exe.bat

@@ -1282,6 +1282,7 @@ class Markvist:
         box.transient(self.root)
         box.resizable(False, False)
         box.configure(bg=p["bg"])
+        apply_icon(box)
 
         def pick(value: str | None) -> None:
             answer[0] = value
