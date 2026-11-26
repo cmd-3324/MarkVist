@@ -39,6 +39,11 @@ hundred an editor platform needs.
   auto save pauses and the tab shows `⚠`; saving then offers *Reload from disk*,
   *Keep mine* (the replaced file is copied to `name.md.bak`) or *Save a copy*.
   `F5` reloads any tab on demand.
+- **Byte-faithful saves** — a save is written to a temporary file beside the
+  target and renamed into place, so an interrupted write leaves the previous
+  version intact instead of a truncated note; the file's own line endings and
+  byte-order mark are kept, so saving an LF file on Windows does not rewrite
+  every line.
 - **Fonts** — separate reading font for the document and monospace font for the
   source pane; the app chrome is never restyled.
 - **Modern document rendering** — a real type scale with rules under H1/H2,
@@ -90,6 +95,17 @@ as an *Open with* target for `.md` files.
 
 Rebuild it after changing the source; `build/`, `dist/` and the generated
 `markvist.spec` are ignored by git.
+
+### Installer
+
+`build_installer.bat` compiles `setup.iss` with Inno Setup 6 into
+`Output\markvist-<version>-setup.exe`: a per-user installer that adds Start-menu
+and optional desktop shortcuts and an uninstaller. Build the exe first.
+
+```bat
+build_exe.bat
+build_installer.bat
+```
 
 ## Keyboard shortcuts
 
@@ -199,6 +215,8 @@ markvist/
 ├── tests/               unittest suite (no display required)
 ├── pyproject.toml
 ├── build_exe.bat        PyInstaller one-file build
+├── build_installer.bat  Inno Setup installer build
+├── setup.iss            installer script (result lands in Output/)
 ├── exe_entry.py         entry script used by the build
 ├── markvist.bat         Windows launcher (needs Python)
 └── README.md
@@ -233,6 +251,8 @@ headless. CI runs them on Ubuntu and Windows for Python 3.10 and 3.13.
   reload it with `F5` (or save over it, which asks first).
 - The find bar has no regular-expression mode; it matches plain text with
   optional case and whole-word sensitivity.
+- Files are read as UTF-8 (with or without a BOM). A file in a legacy
+  encoding is shown with replacement characters and saved back as UTF-8.
 
 ## License
 
