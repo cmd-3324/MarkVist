@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .disk import Signature
+from .disk import FileFormat, Signature
 
 UNTITLED = "untitled.md"
 
@@ -19,6 +19,7 @@ class Document:
     title: str | None = None  # name of an untitled buffer
     disk_sig: Signature | None = None  # state of the file we last read or wrote
     conflict: bool = False  # the file moved on since: never overwrite it silently
+    fmt: FileFormat | None = None  # line endings and BOM to write back
 
     @property
     def name(self) -> str:
@@ -37,7 +38,8 @@ class Document:
         self.text = text
         self.dirty = text != self.saved_text
 
-    def commit(self, text: str, path: Path | None = None) -> None:
+    def commit(self, text: str, path: Path | None = None,
+               fmt: FileFormat | None = None) -> None:
         """Record text that has just been written to disk."""
         self.text = text
         self.saved_text = text
@@ -45,3 +47,5 @@ class Document:
         self.conflict = False
         if path is not None:
             self.path = path
+        if fmt is not None:
+            self.fmt = fmt

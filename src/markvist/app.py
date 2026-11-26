@@ -10,7 +10,7 @@ from itertools import zip_longest
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog
 
-from .disk import backup, read_text, same_file, signature
+from .disk import backup, read_document, same_file, signature, write_document
 from .document import UNTITLED, Document
 from .icon import apply_icon
 from .markdown import detect_rtl, parse_markdown
@@ -1026,13 +1026,14 @@ class Markvist:
                 continue
 
             try:
-                text = read_text(p)
+                text, fmt = read_document(p)
             except OSError as exc:
                 messagebox.showerror("Could not open file", str(exc), parent=self.root)
                 continue
 
             self.docs.append(
-                Document(path=p, text=text, saved_text=text, disk_sig=signature(p))
+                Document(path=p, text=text, saved_text=text, disk_sig=signature(p),
+                         fmt=fmt)
             )
             self._remember_recent(p)
             last_index = len(self.docs) - 1
@@ -1253,12 +1254,12 @@ class Markvist:
             backup(path)  # keep the version this write is about to replace
 
         try:
-            path.write_text(content, encoding="utf-8")
+            fmt = write_document(path, content, doc.fmt)
         except OSError as exc:
             messagebox.showerror("Could not save file", str(exc), parent=self.root)
             return False
 
-        doc.commit(content, path)
+        doc.commit(content, path, fmt)
         doc.disk_sig = signature(path)
         self._remember_recent(path)
         self._write_shadows()
@@ -1359,12 +1360,12 @@ class Markvist:
         if doc.path is None:
             return
         try:
-            text = read_text(doc.path)
+            text, fmt = read_document(doc.path)
         except OSError as exc:
             messagebox.showerror("Could not reload file", str(exc), parent=self.root)
             return
 
-        doc.commit(text)
+        doc.commit(text, fmt=fmt)
         doc.disk_sig = signature(doc.path)
         if doc is self._doc():
             self._loading = True
@@ -1393,12 +1394,12 @@ class Markvist:
         if target.suffix.lower() not in MD_SUFFIXES:
             target = target.with_suffix(".md")
         try:
-            target.write_text(content, encoding="utf-8")
+            fmt = write_document(target, content, doc.fmt)
         except OSError as exc:
             messagebox.showerror("Could not save file", str(exc), parent=self.root)
             return False
 
-        doc.commit(content, target)
+        doc.commit(content, target, fmt)
         doc.disk_sig = signature(target)
         self._remember_recent(target)
         self._write_shadows()
